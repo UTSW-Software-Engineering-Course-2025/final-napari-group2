@@ -5,6 +5,7 @@ import dask.array as da
 from dask import delayed
 import logging
 from typing import Callable, Optional
+from scipy import linalg
 
 import openslide.deepzoom
 
@@ -64,10 +65,14 @@ def deepzoom_reader_function(
 
     layer_data = []
     for p in paths:
-        pyramid = _build_dask_deepzoom_pyramid(p)
+        pyramid, h_label = _build_dask_deepzoom_pyramid(p)
         add_kwargs = {"name": p}
 
         layer_data.append((pyramid, add_kwargs, "image"))
+
+        layer_data.append((h_label, {'name': 'hematoxylin'}, 'image'))
+
+
     return layer_data
 
 
@@ -95,6 +100,7 @@ def _build_dask_deepzoom_pyramid(path: str) -> list[da.Array]:
     levels = dz.level_count
 
     pyramid = []
+    h_tile_arrays = []
 
     for level in reversed(range(levels)):
         cols, rows = dz.level_tiles[level]
@@ -102,8 +108,13 @@ def _build_dask_deepzoom_pyramid(path: str) -> list[da.Array]:
 
         # Build rows of tiles as dask arrays
         row_arrays = []
+        h_row_arrays = []
+
         for row in range(rows):
             tile_arrays = []
+            h_tile_arrays = []
+
+
             for col in range(cols):
                 # Read tile size for this tile (may be smaller on edges)
                 tile_w, tile_h = _get_tile_size(
@@ -113,21 +124,35 @@ def _build_dask_deepzoom_pyramid(path: str) -> list[da.Array]:
                 delayed_tile = delayed(_read_dz_tile)(
                     dz, level, col, row, tile_w, tile_h
                 )
+
+
+
+
                 dask_tile = da.from_delayed(
                     delayed_tile,
                     shape=(tile_h, tile_w, 3),
                     dtype=np.uint8,
                 )
 
-                # dask_tile = da.from_array(
-                #     _read_dz_tile(dz, level, col, row, tile_w, tile_h)
-                # )
+
+                # Only process HED for the highest resolution
+                if level == levels - 1:
+                    h = delayed(get_hematoxylin)(delayed_tile)  # grayscale
+                    h_tile = da.from_delayed(
+                        h, shape=(tile_h, tile_w), dtype=np.uint8
+                    )
+                    h_tile_arrays.append(h_tile)
 
                 # Remove overlap pixels from all but last tile in the row
                 if col < cols - 1 and tile_w > overlap:
                     dask_tile = dask_tile[:, :-overlap, :]
 
                 tile_arrays.append(dask_tile)
+
+
+            if level == levels - 1:
+                h_row_concat = da.concatenate(h_tile_arrays, axis=1)
+                h_row_arrays.append(h_row_concat)
 
             # Concatenate tiles horizontally for this row
             row_concat = da.concatenate(tile_arrays, axis=1)
@@ -146,7 +171,14 @@ def _build_dask_deepzoom_pyramid(path: str) -> list[da.Array]:
 
         pyramid.append(level_array)
 
-    return pyramid
+        if level == levels - 1:
+            h_label_array = da.concatenate(h_row_arrays, axis=0)
+            h_label_array = h_label_array[:height, :width]        
+
+    print('len pyramid:', len(pyramid))
+    print('# level:', levels)
+
+    return pyramid, h_label_array
 
 
 def _get_tile_size(
@@ -225,3 +257,62 @@ def _read_dz_tile(
     # Crop tile to actual size if smaller (edge tiles)
     arr = arr[:tile_h, :tile_w, :]
     return arr
+
+
+
+# convert from rgb space to hed space
+def rgb2hed(rgb):
+    """
+    Convert RGB image to HED using Dask arrays.
+
+    Args:
+        rgb (dask.array): RGB image in [0, 1] range, shape (H, W, 3)
+
+    Returns:
+        dask.array: HED image, shape (H, W, 3)
+    """
+    rgb = rgb.astype(np.float32) / 255.0
+    # Ensure RGB is in [1e-6, 1.0] to avoid log(0)
+    rgb = da.clip(rgb, 1e-6, 1.0)
+
+    # Optical Density (OD) transform: OD = -log(RGB)
+    OD = -da.log(rgb)
+
+    # HED stain matrix from Ruifrok & Johnston (columns: H, E, D)
+    rgb_from_hed = np.array([[0.65, 0.70, 0.29], [0.07, 0.99, 0.11], [0.27, 0.57, 0.78]])
+    hed_from_rgb = linalg.inv(rgb_from_hed)
+
+    # Convert to Dask array so it's compatible with Dask ops
+    hed_from_rgb_dask = da.from_array(hed_from_rgb.T, chunks=(3, 3))
+
+    # Matrix multiplication: (H, W, 3) x (3, 3) → (H, W, 3)
+    stains = da.einsum('ijk,kl->ijl', OD, hed_from_rgb_dask)
+
+    # Optional: clip negative stain values
+    stains = da.clip(stains, 0, None)
+
+    return stains
+
+
+# perform rgb2hed and return hematoxylin
+def get_hematoxylin(rgb):
+
+    hed_img = rgb2hed(rgb)
+
+    # You can now extract the H, E, and D channels separately:
+    h, e, d = np.transpose(hed_img, (2, 0, 1))
+
+    empty = np.zeros_like(h)
+    h_rgb = np.dstack((h, empty, empty))
+
+    h_np =  h_rgb.compute()
+
+    h_np = (h_np - np.min(h_np)) / np.max(h_np)
+    # print('h_rgb.compute():',h_np)
+    # # print('type:', type(h_np))
+
+    # print('min h_np', np.min(h_np))
+    # print('max h_np', np.max(h_np))
+
+    # return hematoxylin
+    return h_np > 0.1
