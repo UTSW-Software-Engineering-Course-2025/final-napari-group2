@@ -85,8 +85,8 @@ def _build_dask_deepzoom_pyramid(path: str) -> list[da.Array]:
         Each array corresponds to a different level of the pyramid.
     """
     slide = openslide.OpenSlide(path)
-    tile_size = 254
-    overlap = 1
+    tile_size = 256
+    overlap = 0
     limit_bounds = True
 
     dz = deepzoom.DeepZoomGenerator(
@@ -111,30 +111,35 @@ def _build_dask_deepzoom_pyramid(path: str) -> list[da.Array]:
                 )
 
                 delayed_tile = delayed(_read_dz_tile)(
-                    dz, level, col, row, tile_w, tile_h
+                    dz, level, col, row, tile_w, tile_h, tile_size
                 )
                 dask_tile = da.from_delayed(
                     delayed_tile,
-                    shape=(tile_h, tile_w, 3),
+                    shape=(tile_size, tile_size, 3),
                     dtype=np.uint8,
                 )
 
                 # dask_tile = da.from_array(
                 #     _read_dz_tile(dz, level, col, row, tile_w, tile_h)
                 # )
-
-                # Remove overlap pixels from all but last tile in the row
-                if col < cols - 1 and tile_w > overlap:
-                    dask_tile = dask_tile[:, :-overlap, :]
+                # Ensure the tile has the correct shape
+                if dask_tile.shape != (tile_size, tile_size, 3):
+                    raise ValueError(
+                        f"Tile shape mismatch at level {level}, col {col}, row {row}: "
+                        f"expected ({tile_size}, {tile_size}, 3), got {dask_tile.shape}"
+                    )
 
                 tile_arrays.append(dask_tile)
 
             # Concatenate tiles horizontally for this row
             row_concat = da.concatenate(tile_arrays, axis=1)
 
-            # Remove overlap pixels from all but last row
-            if row < rows - 1 and height > overlap:
-                row_concat = row_concat[:-overlap, :, :]
+            # Ensure the row has the correct shape
+            if row_concat.shape[1] != cols * (tile_size - overlap):
+                raise ValueError(
+                    f"Row shape mismatch at level {level}, row {row}: "
+                    f"expected {cols * (tile_size - overlap)}, got {row_concat.shape[1]}"
+                )
 
             row_arrays.append(row_concat)
 
@@ -197,6 +202,7 @@ def _read_dz_tile(
     row: int,
     tile_w: int,
     tile_h: int,
+    standard_tile_size: int = 256,
 ) -> np.ndarray:
     """Read a single tile with actual width and height (for edge tiles).
     Parameters
@@ -224,4 +230,10 @@ def _read_dz_tile(
         arr = arr[..., :3]
     # Crop tile to actual size if smaller (edge tiles)
     arr = arr[:tile_h, :tile_w, :]
+
+    # Pad tile to full tile_size if needed
+    if arr.shape[0] != standard_tile_size or arr.shape[1] != standard_tile_size:
+        padded = np.zeros((standard_tile_size, standard_tile_size, arr.shape[-1]), dtype=arr.dtype)
+        padded[:arr.shape[0], :arr.shape[1]] = arr
+        arr = padded
     return arr
