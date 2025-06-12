@@ -9,7 +9,7 @@ https://napari.org/stable/plugins/building_a_plugin/guides.html#readers
 import numpy as np
 import openslide
 import logging
-
+import concurrent.futures
 from typing import Callable, Optional
 
 def napari_get_reader(path: str | list[str]) -> Optional[Callable]:
@@ -72,18 +72,26 @@ def reader_function(path: str | list[str]) -> list[tuple[np.ndarray, dict, str]]
     paths = [path] if isinstance(path, str) else path
 
     layer_data = []
-    for _path in paths:
-        logging.info(f"Reading file: {_path}")
-        slide = openslide.OpenSlide(_path)
-        for level in range(slide.level_count):
-            logging.info(f"Reading level {level} of {_path}")
-            dims = slide.level_dimensions[level]
-            img = slide.read_region((0, 0), level, dims)
-            arr = np.array(img)
-            if arr.shape[-1] == 4:
-                arr = arr[..., :3]  # Drop alpha channel if present
-            add_kwargs = {"name": f"{_path} [level {level}]"}
-            layer_type = "image"
-            layer_data.append((arr, add_kwargs, layer_type))
-
+    with concurrent.futures.ThreadPoolExecutor() as executor:
+        results = list(executor.map(_read_svs_levels, paths))
+    for result in results:
+        layer_data.extend(result)
     return layer_data
+
+
+def _read_svs_levels(_path):
+    """Helper to read all levels from a single SVS file."""
+    logging.info(f"Reading file: {_path}")
+    slide = openslide.OpenSlide(_path)
+    data = []
+    for level in range(slide.level_count):
+        logging.info(f"Reading level {level} of {_path}")
+        dims = slide.level_dimensions[level]
+        img = slide.read_region((0, 0), level, dims)
+        arr = np.array(img)
+        if arr.shape[-1] == 4:
+            arr = arr[..., :3]  # Drop alpha channel if present
+        add_kwargs = {"name": f"{_path} [level {level}]"}
+        layer_type = "image"
+        data.append((arr, add_kwargs, layer_type))
+    return data
