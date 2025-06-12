@@ -4,10 +4,11 @@ from openslide import deepzoom
 import dask.array as da
 from dask import delayed
 import logging
+import os
 from typing import Callable, Optional
+from functools import lru_cache
 
-import openslide.deepzoom
-
+from collections import deque
 
 def napari_get_reader(path: str | list[str]) -> Optional[Callable]:
     """
@@ -64,147 +65,114 @@ def deepzoom_reader_function(
 
     layer_data = []
     for p in paths:
-        pyramid = _build_dask_deepzoom_pyramid(p)
+        if not os.path.isfile(p):
+            raise ValueError(f"Invalid SVS file: {path}")
+        # high tile sizes load faster, but are less responsive
+        pyramid = _build_dask_deepzoom_pyramid(p, tile_size=512, overlap=0)
         add_kwargs = {"name": p}
 
         layer_data.append((pyramid, add_kwargs, "image"))
     return layer_data
 
 
-def _build_dask_deepzoom_pyramid(path: str) -> list[da.Array]:
+def _build_dask_deepzoom_pyramid(
+    path: str, tile_size: int = 256, overlap: int = 0
+) -> list[da.Array]:
     """
     Build a multiscale image pyramid from a DeepZoom SVS file using Dask arrays.
     Parameters
     ----------
     path : str
         The path to the SVS file.
+    tile_size : int, optional
+        The tile size for the pyramid, by default 256.
+    overlap : int, optional
+        The overlap between tiles, by default 0.
     Returns
     -------
     list[da.Array]
         A list of dask arrays representing the multiscale image pyramid.
         Each array corresponds to a different level of the pyramid.
     """
+
+    # Open the SVS file using OpenSlide
+    logging.info("Building Dask DeepZoom pyramid for %s", path)
     slide = openslide.OpenSlide(path)
-    tile_size = 256
-    overlap = 0
     limit_bounds = True
 
     dz = deepzoom.DeepZoomGenerator(
         slide, tile_size=tile_size, overlap=overlap, limit_bounds=limit_bounds
     )
+
+    # Get the number of levels in the .svs file
     levels = dz.level_count
 
     pyramid = []
-
+    # Iterate through each level of the pyramid, napari expects the highest resolution first,
     for level in reversed(range(levels)):
         cols, rows = dz.level_tiles[level]
         width, height = dz.level_dimensions[level]
 
-        # Build rows of tiles as dask arrays
-        row_arrays = []
+        # Create delayed tile reading functions for each tile
+        delayed_tiles = []
         for row in range(rows):
-            tile_arrays = []
+            row_tiles = []
             for col in range(cols):
-                # Read tile size for this tile (may be smaller on edges)
-                tile_w, tile_h = _get_tile_size(
-                    dz, level, col, row, tile_size, overlap
-                )
-
+                # Create delayed tile reader
                 delayed_tile = delayed(_read_dz_tile)(
-                    dz, level, col, row, tile_w, tile_h, tile_size
+                    dz, level, col, row, tile_size
                 )
-                dask_tile = da.from_delayed(
+                row_tiles.append(delayed_tile)
+            delayed_tiles.append(row_tiles)
+
+        # Convert delayed tiles to dask arrays
+        tile_arrays = []
+        for row_tiles in delayed_tiles:
+            row_arrays = []
+            for delayed_tile in row_tiles:
+                tile_array = da.from_delayed(
                     delayed_tile,
                     shape=(tile_size, tile_size, 3),
                     dtype=np.uint8,
                 )
+                row_arrays.append(tile_array)
+            tile_arrays.append(row_arrays)
 
-                # dask_tile = da.from_array(
-                #     _read_dz_tile(dz, level, col, row, tile_w, tile_h)
-                # )
-                # Ensure the tile has the correct shape
-                if dask_tile.shape != (tile_size, tile_size, 3):
-                    raise ValueError(
-                        f"Tile shape mismatch at level {level}, col {col}, row {row}: "
-                        f"expected ({tile_size}, {tile_size}, 3), got {dask_tile.shape}"
-                    )
+        # Concatenate tiles to form the complete level
+        if tile_arrays:
+            # Concatenate tiles within each row
+            row_concatenated = []
+            for row_arrays in tile_arrays:
+                if row_arrays:
+                    row_concat = da.concatenate(row_arrays, axis=1)
+                    row_concatenated.append(row_concat)
 
-                tile_arrays.append(dask_tile)
+            # Concatenate rows to form the complete level
+            if row_concatenated:
+                level_array = da.concatenate(row_concatenated, axis=0)
 
-            # Concatenate tiles horizontally for this row
-            row_concat = da.concatenate(tile_arrays, axis=1)
-
-            # Ensure the row has the correct shape
-            if row_concat.shape[1] != cols * (tile_size - overlap):
-                raise ValueError(
-                    f"Row shape mismatch at level {level}, row {row}: "
-                    f"expected {cols * (tile_size - overlap)}, got {row_concat.shape[1]}"
-                )
-
-            row_arrays.append(row_concat)
-
-        # Concatenate all rows vertically
-        level_array = da.concatenate(row_arrays, axis=0)
-
-        # Crop to exact size (safe check)
-        level_array = level_array[:height, :width, :]
+                # Crop to exact dimensions to handle edge tiles
+                level_array = level_array[:height, :width, :]
+            else:
+                level_array = da.zeros((height, width, 3), dtype=np.uint8)
+        else:
+            level_array = da.zeros((height, width, 3), dtype=np.uint8)
 
         pyramid.append(level_array)
 
     return pyramid
 
 
-def _get_tile_size(
-    dz: openslide.deepzoom.DeepZoomGenerator,
-    level: int,
-    col: int,
-    row: int,
-    tile_size: int,
-    overlap: int,
-) -> tuple[int, int]:
-    """Calculate actual tile width and height at (level, col, row).
-    Handles edge tiles that may be smaller than tile_size.
-    Parameters
-    ----------
-    dz : openslide.deepzoom.DeepZoomGenerator
-        The DeepZoom generator for the slide.
-    level : int
-        The level of the pyramid.
-    col : int
-        The column index of the tile.
-    row : int
-        The row index of the tile.
-    tile_size : int
-        The standard tile size.
-    overlap : int
-        The overlap between tiles.
-    Returns
-    -------
-    tuple[int, int]
-        The actual width and height of the tile at (level, col, row).
-    """
-    level_width, level_height = dz.level_dimensions[level]
-
-    # Coordinates of top-left pixel of tile
-    x = col * (tile_size - overlap)
-    y = row * (tile_size - overlap)
-
-    # Actual tile width and height (handle edge tiles)
-    tile_w = min(tile_size, level_width - x)
-    tile_h = min(tile_size, level_height - y)
-    return tile_w, tile_h
-
-
+@delayed
 def _read_dz_tile(
     dz: openslide.deepzoom.DeepZoomGenerator,
     level: int,
     col: int,
     row: int,
-    tile_w: int,
-    tile_h: int,
     standard_tile_size: int = 256,
 ) -> np.ndarray:
-    """Read a single tile with actual width and height (for edge tiles).
+    """Optimized tile reading with minimal memory allocation and delayed execution.
+
     Parameters
     ----------
     dz : openslide.deepzoom.DeepZoomGenerator
@@ -215,25 +183,32 @@ def _read_dz_tile(
         The column index of the tile.
     row : int
         The row index of the tile.
-    tile_w : int
-        The actual width of the tile.
-    tile_h : int
-        The actual height of the tile.
+    standard_tile_size : int, optional
+        The standard tile size, by default 256.
+
     Returns
     -------
     np.ndarray
-        The tile image as a NumPy array.
+        The tile image as a NumPy array with shape (standard_tile_size, standard_tile_size, 3).
     """
+    # Get the tile from from the DeepZoom generator
     img = dz.get_tile(level, (col, row))
-    arr = np.array(img)
+
+    # Convert to numpy array
+    arr = np.asarray(img, dtype=np.uint8)
+
+    # Handle RGBA to RGB conversion if needed by throwing away the alpha channel
     if arr.shape[-1] == 4:
         arr = arr[..., :3]
-    # Crop tile to actual size if smaller (edge tiles)
-    arr = arr[:tile_h, :tile_w, :]
 
-    # Pad tile to full tile_size if needed
-    if arr.shape[0] != standard_tile_size or arr.shape[1] != standard_tile_size:
-        padded = np.zeros((standard_tile_size, standard_tile_size, arr.shape[-1]), dtype=arr.dtype)
-        padded[:arr.shape[0], :arr.shape[1]] = arr
-        arr = padded
-    return arr
+    # Pre-allocate output array and copy the tile data onto it
+    # This ensures that the output is always of the standard tile size
+    output = np.zeros(
+        (standard_tile_size, standard_tile_size, 3), dtype=np.uint8
+    )
+
+    # Copy actual tile data
+    h, w = arr.shape[:2]
+    output[:h, :w, :] = arr
+
+    return output
