@@ -1,0 +1,15 @@
+name: preload-svs-reader
+display_name: Preload Svs Reader
+# use 'hidden' to remove plugin from napari hub search results
+visibility: public
+# see https://napari.org/stable/plugins/technical_references/manifest.html#fields for valid categories
+categories: ["Annotation", "Segmentation", "Acquisition"]
+contributions:
+  commands:
+    - id: preload-svs-reader.get_reader
+      python_name: preload_svs_reader._reader:napari_get_reader
+      title: Open data with Preload Svs Reader
+  readers:
+    - command: preload-svs-reader.get_reader
+      accepts_directories: false
+      filename_patterns: ['*.npy']

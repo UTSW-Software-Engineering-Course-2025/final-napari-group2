@@ -1,11 +1,11 @@
 [project]
-name = "dl-svs-reader"
+name = "preload-svs-reader"
 dynamic = ["version"]
-description = "A plugin implementing lazy layered .svs file reading with DL nuclear segmentation"
+description = "Quick plugin for eagerly loading and displaying .svs files in Napari"
 readme = "README.md"
 license = {file = "LICENSE"}
 authors = [
-  {name = "Vishruth Mullapudi, Ivan Gu, AJ Jain"},
+  {name = "Vish Mullapudi"},
   {email = "vishruth.mullapudi@utsouthwestern.edu"},
 ]
 classifiers = [
@@ -26,9 +26,6 @@ classifiers = [
 requires-python = ">=3.10"
 dependencies = [
     "numpy",
-    "magicgui",
-    "qtpy",
-    "scikit-image",
 ]
 
 [project.optional-dependencies]
@@ -36,18 +33,15 @@ testing = [
     "tox",
     "pytest",  # https://docs.pytest.org/en/latest/contents.html
     "pytest-cov",  # https://pytest-cov.readthedocs.io/en/latest/
-    "pytest-qt",  # https://pytest-qt.readthedocs.io/en/latest/
-    "napari",
-    "pyqt5",
 ]
 
 [project.entry-points."napari.manifest"]
-dl-svs-reader = "dl_svs_reader:napari.yaml"
+preload-svs-reader = "preload_svs_reader:napari.yaml"
 
 
 
 [build-system]
-requires = ["setuptools>=42.0.0", "wheel", "setuptools_scm"]
+requires = ["setuptools>=42.0.0", "wheel"]
 build-backend = "setuptools.build_meta"
 
 [tool.setuptools]
@@ -60,10 +54,8 @@ where = ["src"]
 "*" = ["*.yaml"]
 
 
-[tool.setuptools_scm]
-write_to = "src/dl_svs_reader/_version.py"
-fallback_version = "0.0.1+nogit"
-
+[tool.setuptools.dynamic]
+version = {attr = "preload_svs_reader.__init__.__version__"}
 
 [tool.black]
 line-length = 79
