@@ -1,14 +1,18 @@
 """
-This module is an example of a barebones numpy reader plugin for napari.
+This module is a basic implementation of a reader for .svs files using the OpenSlide library.
+
 
 It implements the Reader specification, but your plugin may choose to
 implement multiple readers or even other plugin contributions. see:
 https://napari.org/stable/plugins/building_a_plugin/guides.html#readers
 """
 import numpy as np
+import openslide
+import logging
 
+from typing import Callable, Optional
 
-def napari_get_reader(path):
+def napari_get_reader(path: str | list[str]) -> Optional[Callable]:
     """A basic implementation of a Reader contribution.
 
     Parameters
@@ -22,21 +26,26 @@ def napari_get_reader(path):
         If the path is a recognized format, return a function that accepts the
         same path or list of paths, and returns a list of layer data tuples.
     """
-    if isinstance(path, list):
-        # reader plugins may be handed single path, or a list of paths.
-        # if it is a list, it is assumed to be an image stack...
-        # so we are only going to look at the first file.
-        path = path[0]
-
-    # if we know we cannot read the file, we immediately return None.
-    if not path.endswith(".npy"):
+    # Ensure path is either a string or a list of strings
+    if isinstance(path, str):
+        paths = [path]
+    elif isinstance(path, list) and all(isinstance(p, str) for p in path):
+        paths = path
+    else:
+        logging.error("Invalid path type. Expected str or list of str.")
         return None
 
-    # otherwise we return the *function* that can read ``path``.
+    # Check if all paths end with ".svs"
+    if not all(p.endswith(".svs") for p in paths):
+        logging.error("Invalid file format. Expected .svs files.")
+        return None
+
+    # Return the reader function if the paths are valid
+    logging.info("Creating reader for paths: %s", paths)
     return reader_function
 
 
-def reader_function(path):
+def reader_function(path: str | list[str]) -> list[tuple[np.ndarray, dict, str]]:
     """Take a path or list of paths and return a list of LayerData tuples.
 
     Readers are expected to return data as a list of tuples, where each tuple
@@ -58,15 +67,23 @@ def reader_function(path):
         layer. Both "meta", and "layer_type" are optional. napari will
         default to layer_type=="image" if not provided
     """
+    
     # handle both a string and a list of strings
     paths = [path] if isinstance(path, str) else path
-    # load all files into array
-    arrays = [np.load(_path) for _path in paths]
-    # stack arrays into single array
-    data = np.squeeze(np.stack(arrays))
 
-    # optional kwargs for the corresponding viewer.add_* method
-    add_kwargs = {}
+    layer_data = []
+    for _path in paths:
+        logging.info(f"Reading file: {_path}")
+        slide = openslide.OpenSlide(_path)
+        for level in range(slide.level_count):
+            logging.info(f"Reading level {level} of {_path}")
+            dims = slide.level_dimensions[level]
+            img = slide.read_region((0, 0), level, dims)
+            arr = np.array(img)
+            if arr.shape[-1] == 4:
+                arr = arr[..., :3]  # Drop alpha channel if present
+            add_kwargs = {"name": f"{_path} [level {level}]"}
+            layer_type = "image"
+            layer_data.append((arr, add_kwargs, layer_type))
 
-    layer_type = "image"  # optional, default is "image"
-    return [(data, add_kwargs, layer_type)]
+    return layer_data

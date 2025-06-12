@@ -12,4 +12,4 @@ contributions:
   readers:
     - command: preload-svs-reader.get_reader
       accepts_directories: false
-      filename_patterns: ['*.npy']
+      filename_patterns: ['*.svs']
