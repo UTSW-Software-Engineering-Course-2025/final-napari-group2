@@ -1,15 +1,15 @@
-# dl-svs-reader
+# lazy-svs-loader
 
-[![License MIT](https://img.shields.io/pypi/l/dl-svs-reader.svg?color=green)](https://github.com/vmullapudi1/dl-svs-reader/raw/main/LICENSE)
-[![PyPI](https://img.shields.io/pypi/v/dl-svs-reader.svg?color=green)](https://pypi.org/project/dl-svs-reader)
-[![Python Version](https://img.shields.io/pypi/pyversions/dl-svs-reader.svg?color=green)](https://python.org)
-[![tests](https://github.com/vmullapudi1/dl-svs-reader/workflows/tests/badge.svg)](https://github.com/vmullapudi1/dl-svs-reader/actions)
-[![codecov](https://codecov.io/gh/vmullapudi1/dl-svs-reader/branch/main/graph/badge.svg)](https://codecov.io/gh/vmullapudi1/dl-svs-reader)
-[![napari hub](https://img.shields.io/endpoint?url=https://api.napari-hub.org/shields/dl-svs-reader)](https://napari-hub.org/plugins/dl-svs-reader)
+[![License MIT](https://img.shields.io/pypi/l/lazy-svs-loader.svg?color=green)](https://github.com/vmullapudi1/lazy-svs-loader/raw/main/LICENSE)
+[![PyPI](https://img.shields.io/pypi/v/lazy-svs-loader.svg?color=green)](https://pypi.org/project/lazy-svs-loader)
+[![Python Version](https://img.shields.io/pypi/pyversions/lazy-svs-loader.svg?color=green)](https://python.org)
+[![tests](https://github.com/vmullapudi1/lazy-svs-loader/workflows/tests/badge.svg)](https://github.com/vmullapudi1/lazy-svs-loader/actions)
+[![codecov](https://codecov.io/gh/vmullapudi1/lazy-svs-loader/branch/main/graph/badge.svg)](https://codecov.io/gh/vmullapudi1/lazy-svs-loader)
+[![napari hub](https://img.shields.io/endpoint?url=https://api.napari-hub.org/shields/lazy-svs-loader)](https://napari-hub.org/plugins/lazy-svs-loader)
 [![npe2](https://img.shields.io/badge/plugin-npe2-blue?link=https://napari.org/stable/plugins/index.html)](https://napari.org/stable/plugins/index.html)
 [![Copier](https://img.shields.io/endpoint?url=https://raw.githubusercontent.com/copier-org/copier/master/img/badge/badge-grayscale-inverted-border-purple.json)](https://github.com/copier-org/copier)
 
-A plugin implementing lazy layered .svs file reading with DL nuclear segmentation
+Plugin to lazily load .svs data files for use in Napari
 
 ----------------------------------
 
@@ -25,9 +25,9 @@ https://napari.org/stable/plugins/index.html
 
 ## Installation
 
-You can install `dl-svs-reader` via [pip]:
+You can install `lazy-svs-loader` via [pip]:
 
-    pip install dl-svs-reader
+    pip install lazy-svs-loader
 
 
 
@@ -40,7 +40,7 @@ the coverage at least stays the same before you submit a pull request.
 ## License
 
 Distributed under the terms of the [MIT] license,
-"dl-svs-reader" is free and open source software
+"lazy-svs-loader" is free and open source software
 
 ## Issues
 
