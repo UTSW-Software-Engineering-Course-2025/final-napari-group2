@@ -1,0 +1,15 @@
+name: lazy-svs-loader
+display_name: Lazy Svs Loader
+# use 'hidden' to remove plugin from napari hub search results
+visibility: public
+# see https://napari.org/stable/plugins/technical_references/manifest.html#fields for valid categories
+categories: ["Annotation", "Segmentation", "Acquisition"]
+contributions:
+  commands:
+    - id: lazy-svs-loader.get_reader
+      python_name: lazy_svs_loader._reader:napari_get_reader
+      title: Open data with Lazy Svs Loader
+  readers:
+    - command: lazy-svs-loader.get_reader
+      accepts_directories: false
+      filename_patterns: ['*.svs']
