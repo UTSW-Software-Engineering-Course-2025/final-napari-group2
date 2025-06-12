@@ -119,6 +119,10 @@ def _build_dask_deepzoom_pyramid(path: str) -> list[da.Array]:
                     dtype=np.uint8,
                 )
 
+                # dask_tile = da.from_array(
+                #     _read_dz_tile(dz, level, col, row, tile_w, tile_h)
+                # )
+
                 # Remove overlap pixels from all but last tile in the row
                 if col < cols - 1 and tile_w > overlap:
                     dask_tile = dask_tile[:, :-overlap, :]
