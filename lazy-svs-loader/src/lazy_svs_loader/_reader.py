@@ -1,72 +1,98 @@
 """
-This module is an example of a barebones numpy reader plugin for napari.
-
-It implements the Reader specification, but your plugin may choose to
-implement multiple readers or even other plugin contributions. see:
-https://napari.org/stable/plugins/building_a_plugin/guides.html#readers
+This module is a threaded, lazy SVS loader for napari using OpenSlide and dask.
 """
 import numpy as np
+import openslide
+import logging
+import concurrent.futures
+import dask.array as da
+from typing import Callable, Optional
 
-
-def napari_get_reader(path):
-    """A basic implementation of a Reader contribution.
-
-    Parameters
-    ----------
-    path : str or list of str
-        Path to file, or list of paths.
-
-    Returns
-    -------
-    function or None
-        If the path is a recognized format, return a function that accepts the
-        same path or list of paths, and returns a list of layer data tuples.
+def napari_get_reader(path: str | list[str]) -> Optional[Callable]:
+    """Gets the napari reader function for SVS files.
+    This function checks if the provided path is a string or a list of strings,
+    and if the files have the correct .svs extension. If valid, it returns a reader function.
+    Args:
+        path (str | list[str]): Path to a single SVS file or a list of SVS files.
+    Returns:
+        Optional[Callable]: A reader function that can be used by napari to read the SVS files,
+        or None if the path is invalid.
     """
-    if isinstance(path, list):
-        # reader plugins may be handed single path, or a list of paths.
-        # if it is a list, it is assumed to be an image stack...
-        # so we are only going to look at the first file.
-        path = path[0]
-
-    # if we know we cannot read the file, we immediately return None.
-    if not path.endswith(".npy"):
+    if isinstance(path, str):
+        paths = [path]
+    elif isinstance(path, list) and all(isinstance(p, str) for p in path):
+        paths = path
+    else:
+        logging.error("Invalid path type. Expected str or list of str.")
         return None
 
-    # otherwise we return the *function* that can read ``path``.
+    if not all(p.endswith(".svs") for p in paths):
+        logging.error("Invalid file format. Expected .svs files.")
+        return None
+
+    logging.info("Creating reader for paths: %s", paths)
     return reader_function
 
-
-def reader_function(path):
-    """Take a path or list of paths and return a list of LayerData tuples.
-
-    Readers are expected to return data as a list of tuples, where each tuple
-    is (data, [add_kwargs, [layer_type]]), "add_kwargs" and "layer_type" are
-    both optional.
-
-    Parameters
-    ----------
-    path : str or list of str
-        Path to file, or list of paths.
-
-    Returns
-    -------
-    layer_data : list of tuples
-        A list of LayerData tuples where each tuple in the list contains
-        (data, metadata, layer_type), where data is a numpy array, metadata is
-        a dict of keyword arguments for the corresponding viewer.add_* method
-        in napari, and layer_type is a lower-case string naming the type of
-        layer. Both "meta", and "layer_type" are optional. napari will
-        default to layer_type=="image" if not provided
+def reader_function(path: str | list[str]) -> list[tuple[da.Array, dict, str]]:
+    """Take a path or list of paths and return a list of LayerData tuples (dask-backed).
+    Args:
+        path (str | list[str]): Path to a single SVS file or a list of SVS files.
+    Returns:
+        list[tuple[da.Array, dict, str]]: A list of tuples containing dask arrays,
+        metadata dictionaries, and layer types for each level in the SVS files.
     """
-    # handle both a string and a list of strings
     paths = [path] if isinstance(path, str) else path
-    # load all files into array
-    arrays = [np.load(_path) for _path in paths]
-    # stack arrays into single array
-    data = np.squeeze(np.stack(arrays))
 
-    # optional kwargs for the corresponding viewer.add_* method
-    add_kwargs = {}
+    layer_data = []
+    with concurrent.futures.ThreadPoolExecutor() as executor:
+        results = list(executor.map(_dask_svs_levels, paths))
+    for result in results:
+        layer_data.extend(result)
+    return layer_data
 
-    layer_type = "image"  # optional, default is "image"
-    return [(data, add_kwargs, layer_type)]
+def _dask_svs_levels(_path: str) -> list[tuple[da.Array, dict, str]]:
+    """Helper to lazily read all levels from a single SVS file using dask.
+    Args:
+        _path (str): Path to a single SVS file.
+    Returns:
+        list[tuple[da.Array, dict, str]]: A list of tuples containing dask arrays,
+        metadata dictionaries, and layer types for each level in the SVS file.
+    """
+    logging.info(f"Preparing dask-backed layers for file: {_path}")
+    slide = openslide.OpenSlide(_path)
+    data = []
+
+    # Order levels from largest to smallest
+    levels = sorted(
+        range(slide.level_count),
+        key=lambda lvl: slide.level_dimensions[lvl][0] * slide.level_dimensions[lvl][1],
+        reverse=True
+    )
+
+    for level in levels:
+        dims = slide.level_dimensions[level]
+        h, w = dims[1], dims[0]
+
+        def get_region(y0, x0, h, w, level=level, slide_path=_path):
+            slide = openslide.OpenSlide(slide_path)
+            img = slide.read_region((x0, y0), level, (w, h))
+            arr = np.array(img)
+            if arr.shape[-1] == 4:
+                arr = arr[..., :3]
+            return arr
+
+        # dask array shape: (height, width, 3)
+        chunk_size = (min(1024, h), min(1024, w), 3)
+        dask_arr = da.map_blocks(
+            lambda block: get_region(
+                block.location[0], block.location[1], block.shape[0], block.shape[1]
+            ),
+            dtype=np.uint8,
+            chunks=chunk_size,
+            shape=(h, w, 3)
+        )
+
+        add_kwargs = {"name": f"{_path} [level {level}]"}
+        layer_type = "image"
+        data.append((dask_arr, add_kwargs, layer_type))
+    return data
