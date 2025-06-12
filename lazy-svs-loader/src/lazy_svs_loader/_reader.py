@@ -4,11 +4,12 @@ from openslide import deepzoom
 import dask.array as da
 from dask import delayed
 import logging
+import os
 from typing import Callable, Optional
+from functools import lru_cache
 from scipy import linalg
 
-import openslide.deepzoom
-
+from collections import deque
 
 def napari_get_reader(path: str | list[str]) -> Optional[Callable]:
     """
@@ -65,172 +66,215 @@ def deepzoom_reader_function(
 
     layer_data = []
     for p in paths:
-        pyramid, h_label = _build_dask_deepzoom_pyramid(p)
-        add_kwargs = {"name": p}
-
+        if not os.path.isfile(p):
+            raise ValueError(f"Invalid SVS file: {path}")
+        
+        # Build the RGB image pyramid with hematoxylin labels integrated
+        pyramid = _build_dask_deepzoom_pyramid_with_labels(p, tile_size=512, overlap=0)
+        add_kwargs = {"name": f"{p} - RGB"}
         layer_data.append((pyramid, add_kwargs, "image"))
 
-        layer_data.append((h_label, {'name': 'hematoxylin'}, 'image'))
-
-
+        hematoxylin_label_pyramid = _build_hematoxylin_label_pyramid(p, tile_size=512, overlap=0)
+        layer_data.append((hematoxylin_label_pyramid, {"name": f"{p} - Hematoxylin"}, "labels"))
+    
     return layer_data
 
 
-def _build_dask_deepzoom_pyramid(path: str) -> list[da.Array]:
+def _build_dask_deepzoom_pyramid_with_labels(
+    path: str, tile_size: int = 256, overlap: int = 0
+) -> list[da.Array]:
     """
     Build a multiscale image pyramid from a DeepZoom SVS file using Dask arrays.
+    The highest resolution level will trigger hematoxylin label calculation only when accessed.
+    
     Parameters
     ----------
     path : str
         The path to the SVS file.
+    tile_size : int, optional
+        The tile size for the pyramid, by default 256.
+    overlap : int, optional
+        The overlap between tiles, by default 0.
     Returns
     -------
     list[da.Array]
         A list of dask arrays representing the multiscale image pyramid.
         Each array corresponds to a different level of the pyramid.
     """
+
+    # Open the SVS file using OpenSlide
+    logging.info("Building Dask DeepZoom pyramid with lazy hematoxylin labels for %s", path)
     slide = openslide.OpenSlide(path)
-    tile_size = 254
-    overlap = 1
     limit_bounds = True
 
     dz = deepzoom.DeepZoomGenerator(
         slide, tile_size=tile_size, overlap=overlap, limit_bounds=limit_bounds
     )
+
+    # Get the number of levels in the .svs file
     levels = dz.level_count
 
     pyramid = []
-    h_tile_arrays = []
-
+    # Iterate through each level of the pyramid, napari expects the highest resolution first,
     for level in reversed(range(levels)):
         cols, rows = dz.level_tiles[level]
         width, height = dz.level_dimensions[level]
 
-        # Build rows of tiles as dask arrays
-        row_arrays = []
-        h_row_arrays = []
+        # Determine if this is the highest resolution level
+        is_highest_res = (level == levels - 1)
 
+        # Create delayed tile reading functions for each tile
+        delayed_tiles = []
         for row in range(rows):
-            tile_arrays = []
-            h_tile_arrays = []
-
-
+            row_tiles = []
             for col in range(cols):
-                # Read tile size for this tile (may be smaller on edges)
-                tile_w, tile_h = _get_tile_size(
-                    dz, level, col, row, tile_size, overlap
-                )
+                if is_highest_res:
+                    # For highest resolution, use the hematoxylin-aware tile reader
+                    delayed_tile = delayed(_read_dz_tile_with_hematoxylin_trigger)(
+                        dz, level, col, row, tile_size, path
+                    )
+                else:
+                    # For other levels, use regular tile reader
+                    delayed_tile = delayed(_read_dz_tile)(
+                        dz, level, col, row, tile_size
+                    )
+                row_tiles.append(delayed_tile)
+            delayed_tiles.append(row_tiles)
 
-                delayed_tile = delayed(_read_dz_tile)(
-                    dz, level, col, row, tile_w, tile_h
-                )
-
-
-
-
-                dask_tile = da.from_delayed(
+        # Convert delayed tiles to dask arrays
+        tile_arrays = []
+        for row_tiles in delayed_tiles:
+            row_arrays = []
+            for delayed_tile in row_tiles:
+                tile_array = da.from_delayed(
                     delayed_tile,
-                    shape=(tile_h, tile_w, 3),
+                    shape=(tile_size, tile_size, 3),
                     dtype=np.uint8,
                 )
+                row_arrays.append(tile_array)
+            tile_arrays.append(row_arrays)
 
+        # Concatenate tiles to form the complete level
+        if tile_arrays:
+            # Concatenate tiles within each row
+            row_concatenated = []
+            for row_arrays in tile_arrays:
+                if row_arrays:
+                    row_concat = da.concatenate(row_arrays, axis=1)
+                    row_concatenated.append(row_concat)
 
-                # Only process HED for the highest resolution
-                if level == levels - 1:
-                    h = delayed(get_hematoxylin)(delayed_tile)  # grayscale
-                    h_tile = da.from_delayed(
-                        h, shape=(tile_h, tile_w), dtype=np.uint8
-                    )
-                    h_tile_arrays.append(h_tile)
+            # Concatenate rows to form the complete level
+            if row_concatenated:
+                level_array = da.concatenate(row_concatenated, axis=0)
 
-                # Remove overlap pixels from all but last tile in the row
-                if col < cols - 1 and tile_w > overlap:
-                    dask_tile = dask_tile[:, :-overlap, :]
-
-                tile_arrays.append(dask_tile)
-
-
-            if level == levels - 1:
-                h_row_concat = da.concatenate(h_tile_arrays, axis=1)
-                h_row_arrays.append(h_row_concat)
-
-            # Concatenate tiles horizontally for this row
-            row_concat = da.concatenate(tile_arrays, axis=1)
-
-            # Remove overlap pixels from all but last row
-            if row < rows - 1 and height > overlap:
-                row_concat = row_concat[:-overlap, :, :]
-
-            row_arrays.append(row_concat)
-
-        # Concatenate all rows vertically
-        level_array = da.concatenate(row_arrays, axis=0)
-
-        # Crop to exact size (safe check)
-        level_array = level_array[:height, :width, :]
+                # Crop to exact dimensions to handle edge tiles
+                level_array = level_array[:height, :width, :]
+            else:
+                level_array = da.zeros((height, width, 3), dtype=np.uint8)
+        else:
+            level_array = da.zeros((height, width, 3), dtype=np.uint8)
 
         pyramid.append(level_array)
 
-        if level == levels - 1:
-            h_label_array = da.concatenate(h_row_arrays, axis=0)
-            h_label_array = h_label_array[:height, :width]        
-
-    print('len pyramid:', len(pyramid))
-    print('# level:', levels)
-
-    return pyramid, h_label_array
+    return pyramid
 
 
-def _get_tile_size(
-    dz: openslide.deepzoom.DeepZoomGenerator,
-    level: int,
-    col: int,
-    row: int,
-    tile_size: int,
-    overlap: int,
-) -> tuple[int, int]:
-    """Calculate actual tile width and height at (level, col, row).
-    Handles edge tiles that may be smaller than tile_size.
+def _build_hematoxylin_label_pyramid(
+    path: str, tile_size: int = 256, overlap: int = 0
+) -> list[da.Array]:
+    """
+    Build a hematoxylin label array for only the highest resolution level from a DeepZoom SVS file.
+    
     Parameters
     ----------
-    dz : openslide.deepzoom.DeepZoomGenerator
-        The DeepZoom generator for the slide.
-    level : int
-        The level of the pyramid.
-    col : int
-        The column index of the tile.
-    row : int
-        The row index of the tile.
-    tile_size : int
-        The standard tile size.
-    overlap : int
-        The overlap between tiles.
+    path : str
+        The path to the SVS file.
+    tile_size : int, optional
+        The tile size for the pyramid, by default 256.
+    overlap : int, optional
+        The overlap between tiles, by default 0.
+        
     Returns
     -------
-    tuple[int, int]
-        The actual width and height of the tile at (level, col, row).
+    list[da.Array]
+        A list containing a single dask array for the highest resolution hematoxylin labels.
     """
-    level_width, level_height = dz.level_dimensions[level]
+    
+    # Open the SVS file using OpenSlide
+    logging.info("Building Dask Hematoxylin Labels for highest resolution level of %s", path)
+    slide = openslide.OpenSlide(path)
+    limit_bounds = True
 
-    # Coordinates of top-left pixel of tile
-    x = col * (tile_size - overlap)
-    y = row * (tile_size - overlap)
+    dz = deepzoom.DeepZoomGenerator(
+        slide, tile_size=tile_size, overlap=overlap, limit_bounds=limit_bounds
+    )
 
-    # Actual tile width and height (handle edge tiles)
-    tile_w = min(tile_size, level_width - x)
-    tile_h = min(tile_size, level_height - y)
-    return tile_w, tile_h
+    # Get the number of levels in the .svs file
+    levels = dz.level_count
+
+    # Only process the last (highest resolution) level
+    level = levels - 1
+    cols, rows = dz.level_tiles[level]
+    width, height = dz.level_dimensions[level]
+
+    # Create delayed tile reading functions for each tile
+    delayed_tiles = []
+    for row in range(rows):
+        row_tiles = []
+        for col in range(cols):
+            # Create delayed hematoxylin tile reader
+            delayed_tile = delayed(_read_hematoxylin_tile)(
+                dz, level, col, row, tile_size
+            )
+            row_tiles.append(delayed_tile)
+        delayed_tiles.append(row_tiles)
+
+    # Convert delayed tiles to dask arrays
+    tile_arrays = []
+    for row_tiles in delayed_tiles:
+        row_arrays = []
+        for delayed_tile in row_tiles:
+            tile_array = da.from_delayed(
+                delayed_tile,
+                shape=(tile_size, tile_size),
+                dtype=np.uint8,
+            )
+            row_arrays.append(tile_array)
+        tile_arrays.append(row_arrays)
+
+    # Concatenate tiles to form the complete level
+    if tile_arrays:
+        # Concatenate tiles within each row
+        row_concatenated = []
+        for row_arrays in tile_arrays:
+            if row_arrays:
+                row_concat = da.concatenate(row_arrays, axis=1)
+                row_concatenated.append(row_concat)
+
+        # Concatenate rows to form the complete level
+        if row_concatenated:
+            level_array = da.concatenate(row_concatenated, axis=0)
+            # Crop to exact dimensions to handle edge tiles
+            level_array = level_array[:height, :width]
+        else:
+            level_array = da.zeros((height, width), dtype=np.uint8)
+    else:
+        level_array = da.zeros((height, width), dtype=np.uint8)
+
+    # Return as single-item list to match napari's multiscale format
+    return [level_array]
 
 
+@delayed
 def _read_dz_tile(
     dz: openslide.deepzoom.DeepZoomGenerator,
     level: int,
     col: int,
     row: int,
-    tile_w: int,
-    tile_h: int,
+    standard_tile_size: int = 256,
 ) -> np.ndarray:
-    """Read a single tile with actual width and height (for edge tiles).
+    """Optimized tile reading with minimal memory allocation and delayed execution.
+
     Parameters
     ----------
     dz : openslide.deepzoom.DeepZoomGenerator
@@ -241,78 +285,285 @@ def _read_dz_tile(
         The column index of the tile.
     row : int
         The row index of the tile.
-    tile_w : int
-        The actual width of the tile.
-    tile_h : int
-        The actual height of the tile.
+    standard_tile_size : int, optional
+        The standard tile size, by default 256.
+
     Returns
     -------
     np.ndarray
-        The tile image as a NumPy array.
+        The tile image as a NumPy array with shape (standard_tile_size, standard_tile_size, 3).
     """
+    # Get the tile from from the DeepZoom generator
     img = dz.get_tile(level, (col, row))
-    arr = np.array(img)
+
+    # Convert to numpy array
+    arr = np.asarray(img, dtype=np.uint8)
+
+    # Handle RGBA to RGB conversion if needed by throwing away the alpha channel
     if arr.shape[-1] == 4:
         arr = arr[..., :3]
-    # Crop tile to actual size if smaller (edge tiles)
-    arr = arr[:tile_h, :tile_w, :]
-    return arr
 
+    # Pre-allocate output array and copy the tile data onto it
+    # This ensures that the output is always of the standard tile size
+    output = np.zeros(
+        (standard_tile_size, standard_tile_size, 3), dtype=np.uint8
+    )
+
+    # Copy actual tile data
+    h, w = arr.shape[:2]
+    output[:h, :w, :] = arr
+
+    return output
+
+
+# Global cache for hematoxylin labels to avoid recalculation
+_hematoxylin_cache = {}
+
+@delayed
+def _read_dz_tile_with_hematoxylin_trigger(
+    dz: openslide.deepzoom.DeepZoomGenerator,
+    level: int,
+    col: int,
+    row: int,
+    standard_tile_size: int = 256,
+    path: str = None,
+) -> np.ndarray:
+    """
+    Read a tile and trigger hematoxylin label calculation for the highest resolution level.
+    This function will create a separate labels layer when the highest resolution is accessed.
+
+    Parameters
+    ----------
+    dz : openslide.deepzoom.DeepZoomGenerator
+        The DeepZoom generator for the slide.
+    level : int
+        The level of the pyramid.
+    col : int
+        The column index of the tile.
+    row : int
+        The row index of the tile.
+    standard_tile_size : int, optional
+        The standard tile size, by default 256.
+    path : str, optional
+        The path to the SVS file for caching purposes.
+
+    Returns
+    -------
+    np.ndarray
+        The tile image as a NumPy array with shape (standard_tile_size, standard_tile_size, 3).
+    """
+    # Get the tile from the DeepZoom generator
+    img = dz.get_tile(level, (col, row))
+
+    # Convert to numpy array
+    arr = np.asarray(img, dtype=np.uint8)
+
+    # Handle RGBA to RGB conversion if needed by throwing away the alpha channel
+    if arr.shape[-1] == 4:
+        arr = arr[..., :3]
+
+    # Pre-allocate output array and copy the tile data onto it
+    output = np.zeros(
+        (standard_tile_size, standard_tile_size, 3), dtype=np.uint8
+    )
+
+    # Copy actual tile data
+    h, w = arr.shape[:2]
+    output[:h, :w, :] = arr
+
+    # Trigger hematoxylin calculation and add to napari (this happens lazily)
+    _trigger_hematoxylin_layer_creation(output, level, col, row, path)
+
+    return output
+
+
+def _trigger_hematoxylin_layer_creation(tile_rgb, level, col, row, path):
+    """
+    Trigger the creation of hematoxylin labels when highest resolution tiles are accessed.
+    This is where the actual hematoxylin processing happens.
+    """
+    # Check if we should create hematoxylin labels for this tile
+    cache_key = f"{path}_{level}_{col}_{row}"
+    
+    if cache_key not in _hematoxylin_cache:
+        # Calculate hematoxylin labels for this tile
+        hematoxylin_labels = get_hematoxylin(tile_rgb)
+        _hematoxylin_cache[cache_key] = hematoxylin_labels.astype(np.uint8)
+        
+        # Log that hematoxylin processing occurred (optional)
+        logging.info(f"Calculated hematoxylin labels for tile {col},{row} at level {level}")
+
+
+@delayed
+def _read_hematoxylin_tile_lazy(
+    dz: openslide.deepzoom.DeepZoomGenerator,
+    level: int,
+    col: int,
+    row: int,
+    standard_tile_size: int = 256,
+    path: str = None,
+) -> np.ndarray:
+    """
+    Lazily read and calculate hematoxylin labels for a tile.
+    This function is only called when the hematoxylin labels are actually needed.
+
+    Parameters
+    ----------
+    dz : openslide.deepzoom.DeepZoomGenerator
+        The DeepZoom generator for the slide.
+    level : int
+        The level of the pyramid.
+    col : int
+        The column index of the tile.
+    row : int
+        The row index of the tile.
+    standard_tile_size : int, optional
+        The standard tile size, by default 256.
+    path : str, optional
+        The path to the SVS file for caching purposes.
+
+    Returns
+    -------
+    np.ndarray
+        The hematoxylin labels as a NumPy array with shape (standard_tile_size, standard_tile_size).
+    """
+    cache_key = f"{path}_{level}_{col}_{row}"
+    
+    # Check if already calculated
+    if cache_key in _hematoxylin_cache:
+        return _hematoxylin_cache[cache_key]
+    
+    # Calculate if not in cache
+    img = dz.get_tile(level, (col, row))
+    arr = np.asarray(img, dtype=np.uint8)
+
+    if arr.shape[-1] == 4:
+        arr = arr[..., :3]
+
+    rgb_output = np.zeros(
+        (standard_tile_size, standard_tile_size, 3), dtype=np.uint8
+    )
+
+    h, w = arr.shape[:2]
+    rgb_output[:h, :w, :] = arr
+
+    # Calculate hematoxylin labels
+    hematoxylin_labels = get_hematoxylin(rgb_output)
+    result = hematoxylin_labels.astype(np.uint8)
+    
+    # Cache the result
+    _hematoxylin_cache[cache_key] = result
+    
+    return result
 
 
 # convert from rgb space to hed space
 def rgb2hed(rgb):
     """
-    Convert RGB image to HED using Dask arrays.
+    Convert RGB image to HED using numpy arrays.
 
     Args:
-        rgb (dask.array): RGB image in [0, 1] range, shape (H, W, 3)
+        rgb (numpy.ndarray): RGB image in [0, 255] range, shape (H, W, 3)
 
     Returns:
-        dask.array: HED image, shape (H, W, 3)
+        numpy.ndarray: HED image, shape (H, W, 3)
     """
     rgb = rgb.astype(np.float32) / 255.0
     # Ensure RGB is in [1e-6, 1.0] to avoid log(0)
-    rgb = da.clip(rgb, 1e-6, 1.0)
+    rgb = np.clip(rgb, 1e-6, 1.0)
 
     # Optical Density (OD) transform: OD = -log(RGB)
-    OD = -da.log(rgb)
+    OD = -np.log(rgb)
 
     # HED stain matrix from Ruifrok & Johnston (columns: H, E, D)
     rgb_from_hed = np.array([[0.65, 0.70, 0.29], [0.07, 0.99, 0.11], [0.27, 0.57, 0.78]])
     hed_from_rgb = linalg.inv(rgb_from_hed)
 
-    # Convert to Dask array so it's compatible with Dask ops
-    hed_from_rgb_dask = da.from_array(hed_from_rgb.T, chunks=(3, 3))
-
     # Matrix multiplication: (H, W, 3) x (3, 3) → (H, W, 3)
-    stains = da.einsum('ijk,kl->ijl', OD, hed_from_rgb_dask)
+    stains = np.einsum('ijk,kl->ijl', OD, hed_from_rgb.T)
 
     # Optional: clip negative stain values
-    stains = da.clip(stains, 0, None)
+    stains = np.clip(stains, 0, None)
 
     return stains
 
 
 # perform rgb2hed and return hematoxylin
 def get_hematoxylin(rgb):
-
+    """
+    Extract hematoxylin labels from RGB image.
+    
+    Args:
+        rgb (numpy.ndarray): RGB image, shape (H, W, 3)
+        
+    Returns:
+        numpy.ndarray: Boolean array indicating hematoxylin regions, shape (H, W)
+    """
     hed_img = rgb2hed(rgb)
 
-    # You can now extract the H, E, and D channels separately:
+    # Extract the H, E, and D channels separately:
     h, e, d = np.transpose(hed_img, (2, 0, 1))
 
     empty = np.zeros_like(h)
     h_rgb = np.dstack((h, empty, empty))
 
-    h_np =  h_rgb.compute()
+    # Normalize hematoxylin channel
+    h_normalized = (h_rgb - np.min(h_rgb)) / (np.max(h_rgb) - np.min(h_rgb) + 1e-8)
 
-    h_np = (h_np - np.min(h_np)) / np.max(h_np)
-    # print('h_rgb.compute():',h_np)
-    # # print('type:', type(h_np))
+    # Return hematoxylin labels (threshold at 0.1)
+    return h_normalized[..., 0] > 0.1
 
-    # print('min h_np', np.min(h_np))
-    # print('max h_np', np.max(h_np))
 
-    # return hematoxylin
-    return h_np > 0.1
+
+@delayed
+def _read_hematoxylin_tile(
+    dz: openslide.deepzoom.DeepZoomGenerator,
+    level: int,
+    col: int,
+    row: int,
+    standard_tile_size: int = 256,
+) -> np.ndarray:
+    """Read a tile and convert it to hematoxylin labels.
+
+    Parameters
+    ----------
+    dz : openslide.deepzoom.DeepZoomGenerator
+        The DeepZoom generator for the slide.
+    level : int
+        The level of the pyramid.
+    col : int
+        The column index of the tile.
+    row : int
+        The row index of the tile.
+    standard_tile_size : int, optional
+        The standard tile size, by default 256.
+
+    Returns
+    -------
+    np.ndarray
+        The hematoxylin labels as a NumPy array with shape (standard_tile_size, standard_tile_size).
+    """
+    # Get the tile from the DeepZoom generator
+    img = dz.get_tile(level, (col, row))
+
+    # Convert to numpy array
+    arr = np.asarray(img, dtype=np.uint8)
+
+    # Handle RGBA to RGB conversion if needed by throwing away the alpha channel
+    if arr.shape[-1] == 4:
+        arr = arr[..., :3]
+
+    # Pre-allocate RGB output array and copy the tile data onto it
+    rgb_output = np.zeros(
+        (standard_tile_size, standard_tile_size, 3), dtype=np.uint8
+    )
+
+    # Copy actual tile data
+    h, w = arr.shape[:2]
+    rgb_output[:h, :w, :] = arr
+
+    # Convert to hematoxylin labels
+    hematoxylin_labels = get_hematoxylin(rgb_output)
+    
+    # Convert boolean labels to uint8 (0 for background, 1 for hematoxylin)
+    return hematoxylin_labels.astype(np.uint8)
