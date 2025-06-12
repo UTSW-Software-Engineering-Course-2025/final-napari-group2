@@ -1,15 +1,15 @@
-# dl-svs-reader
+# preload-svs-reader
 
-[![License MIT](https://img.shields.io/pypi/l/dl-svs-reader.svg?color=green)](https://github.com/vmullapudi1/dl-svs-reader/raw/main/LICENSE)
-[![PyPI](https://img.shields.io/pypi/v/dl-svs-reader.svg?color=green)](https://pypi.org/project/dl-svs-reader)
-[![Python Version](https://img.shields.io/pypi/pyversions/dl-svs-reader.svg?color=green)](https://python.org)
-[![tests](https://github.com/vmullapudi1/dl-svs-reader/workflows/tests/badge.svg)](https://github.com/vmullapudi1/dl-svs-reader/actions)
-[![codecov](https://codecov.io/gh/vmullapudi1/dl-svs-reader/branch/main/graph/badge.svg)](https://codecov.io/gh/vmullapudi1/dl-svs-reader)
-[![napari hub](https://img.shields.io/endpoint?url=https://api.napari-hub.org/shields/dl-svs-reader)](https://napari-hub.org/plugins/dl-svs-reader)
+[![License MIT](https://img.shields.io/pypi/l/preload-svs-reader.svg?color=green)](https://github.com/vmullapudi1/preload-svs-reader/raw/main/LICENSE)
+[![PyPI](https://img.shields.io/pypi/v/preload-svs-reader.svg?color=green)](https://pypi.org/project/preload-svs-reader)
+[![Python Version](https://img.shields.io/pypi/pyversions/preload-svs-reader.svg?color=green)](https://python.org)
+[![tests](https://github.com/vmullapudi1/preload-svs-reader/workflows/tests/badge.svg)](https://github.com/vmullapudi1/preload-svs-reader/actions)
+[![codecov](https://codecov.io/gh/vmullapudi1/preload-svs-reader/branch/main/graph/badge.svg)](https://codecov.io/gh/vmullapudi1/preload-svs-reader)
+[![napari hub](https://img.shields.io/endpoint?url=https://api.napari-hub.org/shields/preload-svs-reader)](https://napari-hub.org/plugins/preload-svs-reader)
 [![npe2](https://img.shields.io/badge/plugin-npe2-blue?link=https://napari.org/stable/plugins/index.html)](https://napari.org/stable/plugins/index.html)
 [![Copier](https://img.shields.io/endpoint?url=https://raw.githubusercontent.com/copier-org/copier/master/img/badge/badge-grayscale-inverted-border-purple.json)](https://github.com/copier-org/copier)
 
-A plugin implementing lazy layered .svs file reading with DL nuclear segmentation
+Quick plugin for eagerly loading and displaying .svs files in Napari
 
 ----------------------------------
 
@@ -25,9 +25,9 @@ https://napari.org/stable/plugins/index.html
 
 ## Installation
 
-You can install `dl-svs-reader` via [pip]:
+You can install `preload-svs-reader` via [pip]:
 
-    pip install dl-svs-reader
+    pip install preload-svs-reader
 
 
 
@@ -40,7 +40,7 @@ the coverage at least stays the same before you submit a pull request.
 ## License
 
 Distributed under the terms of the [MIT] license,
-"dl-svs-reader" is free and open source software
+"preload-svs-reader" is free and open source software
 
 ## Issues
 

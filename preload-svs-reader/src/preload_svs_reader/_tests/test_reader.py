@@ -1,6 +1,6 @@
 import numpy as np
 
-from dl_svs_reader import napari_get_reader
+from preload_svs_reader import napari_get_reader
 
 
 # tmp_path is a pytest fixture
