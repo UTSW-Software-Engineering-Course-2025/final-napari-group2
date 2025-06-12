@@ -1,0 +1,44 @@
+name: dl-svs-reader
+display_name: DL SVS Reader
+# use 'hidden' to remove plugin from napari hub search results
+visibility: public
+# see https://napari.org/stable/plugins/technical_references/manifest.html#fields for valid categories
+categories: ["Annotation", "Segmentation", "Acquisition"]
+contributions:
+  commands:
+    - id: dl-svs-reader.get_reader
+      python_name: dl_svs_reader._reader:napari_get_reader
+      title: Open data with DL SVS Reader
+    - id: dl-svs-reader.make_sample_data
+      python_name: dl_svs_reader._sample_data:make_sample_data
+      title: Load sample data from DL SVS Reader
+    - id: dl-svs-reader.make_container_widget
+      python_name: dl_svs_reader:ImageThreshold
+      title: Make threshold Container widget
+    - id: dl-svs-reader.make_magic_widget
+      python_name: dl_svs_reader:threshold_magic_widget
+      title: Make threshold magic widget
+    - id: dl-svs-reader.make_function_widget
+      python_name: dl_svs_reader:threshold_autogenerate_widget
+      title: Make threshold function widget
+    - id: dl-svs-reader.make_qwidget
+      python_name: dl_svs_reader:ExampleQWidget
+      title: Make example QWidget
+  readers:
+    - command: dl-svs-reader.get_reader
+      accepts_directories: false
+      filename_patterns: ['*.npy']
+  sample_data:
+    - command: dl-svs-reader.make_sample_data
+      display_name: DL SVS Reader
+      key: unique_id.1
+  widgets:
+    - command: dl-svs-reader.make_container_widget
+      display_name: Container Threshold
+    - command: dl-svs-reader.make_magic_widget
+      display_name: Magic Threshold
+    - command: dl-svs-reader.make_function_widget
+      autogenerate: true
+      display_name: Autogenerate Threshold
+    - command: dl-svs-reader.make_qwidget
+      display_name: Example QWidget
