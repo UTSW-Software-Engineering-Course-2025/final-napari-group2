@@ -1,13 +1,16 @@
+import numpy as np
+import openslide
+from openslide import deepzoom
+import dask.array as da
+from dask import delayed
 import logging
 import os
 from typing import Callable, Optional
+from functools import lru_cache
+from scipy import linalg
+from vispy.color import Colormap
 
-import dask.array as da
-import numpy as np
-import openslide
-from dask import delayed
-from openslide import deepzoom
-
+from collections import deque
 
 def napari_get_reader(path: str | list[str]) -> Optional[Callable]:
     """
@@ -66,17 +69,19 @@ def deepzoom_reader_function(
     for p in paths:
         if not os.path.isfile(p):
             raise ValueError(f"Invalid SVS file: {path}")
-        # high tile sizes load faster, but are less responsive
-        pyramid = _build_dask_deepzoom_pyramid(p, tile_size=512, overlap=0)
-        add_kwargs = {"name": p}
-
+        
+        # Build the RGB image pyramid with hematoxylin labels integrated
+        pyramid, hematoxylin_pyramid = _build_dask_deepzoom_pyramid_with_labels(p, tile_size=512, overlap=0)
+        # print([layer.shape for layer in hematoxylin_pyramid])
+        # print([layer.shape for layer in pyramid])
+        add_kwargs = {"name": f"{p} - RGB"}
         layer_data.append((pyramid, add_kwargs, "image"))
         layer_data.append((hematoxylin_pyramid, {"name": f"{p} - Hematoxylin", "contrast_limits": [0, 1], 'colormap': ('label_red', Colormap([[0.0, 0.0, 0.0, 0.0], [1.0, 0.0, 0.0, 1.0]]))}, "image"))
     
     return layer_data
 
 
-def _build_dask_deepzoom_pyramid(
+def _build_dask_deepzoom_pyramid_with_labels(
     path: str, tile_size: int = 256, overlap: int = 0
 ) -> list[da.Array]:
     """
@@ -99,7 +104,7 @@ def _build_dask_deepzoom_pyramid(
     """
 
     # Open the SVS file using OpenSlide
-    logging.info("Building Dask DeepZoom pyramid for %s", path)
+    logging.info("Building Dask DeepZoom pyramid with lazy hematoxylin labels for %s", path)
     slide = openslide.OpenSlide(path)
     limit_bounds = True
 
@@ -111,17 +116,22 @@ def _build_dask_deepzoom_pyramid(
     levels = dz.level_count
 
     pyramid = []
+    pyramid_hematoxylin = []
     # Iterate through each level of the pyramid, napari expects the highest resolution first,
     for level in reversed(range(levels)):
         cols, rows = dz.level_tiles[level]
         width, height = dz.level_dimensions[level]
+
+        # Determine if this is the highest resolution level
+        is_highest_res = (level == levels - 1)
 
         # Create delayed tile reading functions for each tile
         delayed_tiles = []
         for row in range(rows):
             row_tiles = []
             for col in range(cols):
-                # Create delayed tile reader
+
+                # For other levels, use regular tile reader
                 delayed_tile = delayed(_read_dz_tile)(
                     dz, level, col, row, tile_size
                 )
@@ -161,10 +171,17 @@ def _build_dask_deepzoom_pyramid(
         else:
             level_array = da.zeros((height, width, 3), dtype=np.uint8)
 
+  
         pyramid.append(level_array)
+        # pyramid_hematoxylin.append(level_array_hema)
+        if is_highest_res: 
+            # For the highest resolution level, build hematoxylin labels
+            level_array_hema = rgb2hed(level_array)[:,:,0] > 0.1
+        else:
+            level_array_hema = da.zeros_like(level_array[:, :, 0], dtype=np.uint8)
+        pyramid_hematoxylin.append(level_array_hema)
 
-    return pyramid
-
+    return pyramid, pyramid_hematoxylin
 
 @delayed
 def _read_dz_tile(
@@ -215,3 +232,37 @@ def _read_dz_tile(
     output[:h, :w, :] = arr
 
     return output
+
+
+# convert from rgb space to hed space
+def rgb2hed(rgb):
+    """
+    Convert RGB image to HED using Dask arrays.
+
+    Args:
+        rgb (dask.array): RGB image in [0, 1] range, shape (H, W, 3)
+
+    Returns:
+        dask.array: HED image, shape (H, W, 3)
+    """
+    rgb = rgb.astype(np.float32) / 255.0
+    # Ensure RGB is in [1e-6, 1.0] to avoid log(0)
+    rgb = da.clip(rgb, 1e-6, 1.0)
+
+    # Optical Density (OD) transform: OD = -log(RGB)
+    OD = -da.log(rgb)
+
+    # HED stain matrix from Ruifrok & Johnston (columns: H, E, D)
+    rgb_from_hed = da.array([[0.65, 0.70, 0.29], [0.07, 0.99, 0.11], [0.27, 0.57, 0.78]])
+    hed_from_rgb = linalg.inv(rgb_from_hed)
+
+    # Convert to Dask array so it's compatible with Dask ops
+    hed_from_rgb_dask = da.from_array(hed_from_rgb.T, chunks=(3, 3))
+
+    # Matrix multiplication: (H, W, 3) x (3, 3) → (H, W, 3)
+    stains = da.einsum('ijk,kl->ijl', OD, hed_from_rgb_dask)
+
+    # Optional: clip negative stain values
+    stains = da.clip(stains, 0, None)
+
+    return stains
