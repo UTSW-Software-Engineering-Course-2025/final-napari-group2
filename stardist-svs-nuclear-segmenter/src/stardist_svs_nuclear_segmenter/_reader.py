@@ -66,15 +66,14 @@ def deepzoom_reader_function(
     for p in paths:
         if not os.path.isfile(p):
             raise ValueError(f"Invalid SVS file: {path}")
-        # high tile sizes load faster, but are less responsive
-        pyramid = _build_dask_deepzoom_pyramid(p, tile_size=512, overlap=0)
+        pyramid = _build_dask_deepzoom_pyramid(p, tile_size=256, overlap=0)
         add_kwargs = {"name": p}
 
         layer_data.append((pyramid, add_kwargs, "image"))
 
         # Add segmentation layer for level 0
         segmentation_pyramid = _build_dask_segmentation_pyramid(
-            p, tile_size=512, overlap=0
+            p, tile_size=256, overlap=0
         )
         seg_kwargs = {"name": f"{p}_segmentation", "opacity": 0.7}
         layer_data.append((segmentation_pyramid, seg_kwargs, "labels"))
@@ -126,7 +125,10 @@ def _build_dask_deepzoom_pyramid(
             row_tiles = []
             for col in range(cols):
                 # Create delayed tile reader
-                delayed_tile = delayed(_read_dz_tile)(
+                # delayed_tile = delayed(_read_dz_tile)(
+                #     dz, level, col, row, tile_size
+                # )
+                delayed_tile = _read_dz_tile(
                     dz, level, col, row, tile_size
                 )
                 row_tiles.append(delayed_tile)
@@ -307,6 +309,7 @@ def _read_dz_tile_sync(
     h, w = arr.shape[:2]
     output[:h, :w, :] = arr
 
+    # binarize output
     return output
 
 
