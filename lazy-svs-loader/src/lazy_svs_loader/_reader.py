@@ -71,8 +71,6 @@ def deepzoom_reader_function(
         add_kwargs = {"name": p}
 
         layer_data.append((pyramid, add_kwargs, "image"))
-        layer_data.append((hematoxylin_pyramid, {"name": f"{p} - Hematoxylin", "contrast_limits": [0, 1], 'colormap': ('label_red', Colormap([[0.0, 0.0, 0.0, 0.0], [1.0, 0.0, 0.0, 1.0]]))}, "image"))
-    
     return layer_data
 
 
@@ -81,8 +79,6 @@ def _build_dask_deepzoom_pyramid(
 ) -> list[da.Array]:
     """
     Build a multiscale image pyramid from a DeepZoom SVS file using Dask arrays.
-    The highest resolution level will trigger hematoxylin label calculation only when accessed.
-    
     Parameters
     ----------
     path : str
