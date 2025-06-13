@@ -1,37 +1,17 @@
 name: stardist-svs-nuclear-segmenter
-display_name: Stardist Svs Nuclear Segmenter
-# use 'hidden' to remove plugin from napari hub search results
-visibility: public
-# see https://napari.org/stable/plugins/technical_references/manifest.html#fields for valid categories
-categories: ["Annotation", "Segmentation", "Acquisition"]
+display_name: StarDist SVS Nuclear Segmenter
 contributions:
   commands:
+    - id: stardist-svs-nuclear-segmenter.make_stardist_widget
+      python_name: stardist_svs_nuclear_segmenter:StarDistWidget
+      title: Create StarDist Widget
     - id: stardist-svs-nuclear-segmenter.get_reader
       python_name: stardist_svs_nuclear_segmenter._reader:napari_get_reader
-      title: Open data with Stardist Svs Nuclear Segmenter
-    - id: stardist-svs-nuclear-segmenter.make_container_widget
-      python_name: stardist_svs_nuclear_segmenter:ImageThreshold
-      title: Make threshold Container widget
-    - id: stardist-svs-nuclear-segmenter.make_magic_widget
-      python_name: stardist_svs_nuclear_segmenter:threshold_magic_widget
-      title: Make threshold magic widget
-    - id: stardist-svs-nuclear-segmenter.make_function_widget
-      python_name: stardist_svs_nuclear_segmenter:threshold_autogenerate_widget
-      title: Make threshold function widget
-    - id: stardist-svs-nuclear-segmenter.make_qwidget
-      python_name: stardist_svs_nuclear_segmenter:ExampleQWidget
-      title: Make example QWidget
+      title: Open data with StarDist SVS Nuclear Segmenter
+  widgets:
+    - command: stardist-svs-nuclear-segmenter.make_stardist_widget
+      display_name: StarDist Segmenter
   readers:
     - command: stardist-svs-nuclear-segmenter.get_reader
       accepts_directories: false
-      filename_patterns: ['*.npy']
-  widgets:
-    - command: stardist-svs-nuclear-segmenter.make_container_widget
-      display_name: Container Threshold
-    - command: stardist-svs-nuclear-segmenter.make_magic_widget
-      display_name: Magic Threshold
-    - command: stardist-svs-nuclear-segmenter.make_function_widget
-      autogenerate: true
-      display_name: Autogenerate Threshold
-    - command: stardist-svs-nuclear-segmenter.make_qwidget
-      display_name: Example QWidget
+      filename_patterns: ['*.svs']

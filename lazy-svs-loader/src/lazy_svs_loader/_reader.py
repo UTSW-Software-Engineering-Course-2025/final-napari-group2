@@ -1,14 +1,13 @@
-import numpy as np
-import openslide
-from openslide import deepzoom
-import dask.array as da
-from dask import delayed
 import logging
 import os
 from typing import Callable, Optional
-from functools import lru_cache
 
-from collections import deque
+import dask.array as da
+import numpy as np
+import openslide
+from dask import delayed
+from openslide import deepzoom
+
 
 def napari_get_reader(path: str | list[str]) -> Optional[Callable]:
     """
