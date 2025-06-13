@@ -121,7 +121,8 @@ def _build_dask_deepzoom_pyramid_with_labels(
         width, height = dz.level_dimensions[level]
 
         # Determine if this is the highest resolution level
-        is_highest_res = (level == levels - 1)
+        # is_highest_res = (level == levels - 1)
+        is_highest_res = False
 
         # Create delayed tile reading functions for each tile
         delayed_tiles = []
@@ -134,6 +135,7 @@ def _build_dask_deepzoom_pyramid_with_labels(
                         dz, level, col, row, tile_size, path
                     )
                 else:
+                    # print('always load tile')
                     # For other levels, use regular tile reader
                     delayed_tile = delayed(_read_dz_tile)(
                         dz, level, col, row, tile_size
@@ -511,7 +513,7 @@ def get_hematoxylin(rgb):
     h_normalized = (h_rgb - np.min(h_rgb)) / (np.max(h_rgb) - np.min(h_rgb) + 1e-8)
 
     # Return hematoxylin labels (threshold at 0.1)
-    return h_normalized[..., 0] > 0.1
+    return h_normalized[..., 0] > 0.5
 
 
 
@@ -564,6 +566,11 @@ def _read_hematoxylin_tile(
 
     # Convert to hematoxylin labels
     hematoxylin_labels = get_hematoxylin(rgb_output)
+
+    print('no long lazy hema')
     
+    print('hematoxylin_labels:', hematoxylin_labels)
+
+
     # Convert boolean labels to uint8 (0 for background, 1 for hematoxylin)
     return hematoxylin_labels.astype(np.uint8)
