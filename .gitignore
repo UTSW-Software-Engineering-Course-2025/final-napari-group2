@@ -2,6 +2,7 @@
 
 
 .conda
+.conda2
 sample_data/*
 
 # Byte-compiled / optimized / DLL files
