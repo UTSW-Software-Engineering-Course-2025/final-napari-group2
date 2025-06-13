@@ -31,12 +31,6 @@ You can install `stardist-svs-nuclear-segmenter` via [pip]:
 
 
 
-
-## Contributing
-
-Contributions are very welcome. Tests can be run with [tox], please ensure
-the coverage at least stays the same before you submit a pull request.
-
 ## License
 
 Distributed under the terms of the [MIT] license,

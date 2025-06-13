@@ -4,6 +4,15 @@
 
 This project contains four complementary napari plugins designed for processing and analyzing whole slide images (WSI) in SVS format. Each plugin addresses different aspects of SVS file handling, from basic loading to advanced nuclear segmentation.
 
+## Installation:
+Clone the repository and install the provided environment.yml using conda or pixi.
+Then, install the plugin of interest using
+
+```
+pip install ./<plugin folder>
+```
+Then, simply run Napari, activate the plugin, and import an SVS file.
+
 ## Plugin Overview
 
 ### 1. **preload-svs-reader**

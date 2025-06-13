@@ -31,12 +31,6 @@ You can install `lazy-loader-hed` via [pip]:
 
 
 
-
-## Contributing
-
-Contributions are very welcome. Tests can be run with [tox], please ensure
-the coverage at least stays the same before you submit a pull request.
-
 ## License
 
 Distributed under the terms of the [BSD-3] license,
