@@ -75,7 +75,8 @@ def reader_function(path: str | list[str]) -> list[tuple[np.ndarray, dict, str]]
     with concurrent.futures.ThreadPoolExecutor() as executor:
         results = list(executor.map(_read_svs_levels, paths))
     for result in results:
-        layer_data.extend(result)
+        layer_data.append(result)
+        #layer_data.extend(result)
     return layer_data
 
 
@@ -91,7 +92,7 @@ def _read_svs_levels(_path):
         arr = np.array(img)
         if arr.shape[-1] == 4:
             arr = arr[..., :3]  # Drop alpha channel if present
-        add_kwargs = {"name": f"{_path} [level {level}]"}
-        layer_type = "image"
-        data.append((arr, add_kwargs, layer_type))
-    return data
+        data.append(arr)
+    add_kwargs = {"name": f"{_path}"}
+    layer_type = "image"
+    return (data, add_kwargs, layer_type)
